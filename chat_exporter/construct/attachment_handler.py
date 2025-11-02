@@ -1,11 +1,13 @@
 import datetime
 import io
 import pathlib
-from typing import Union
+from typing import Union, Optional
 import urllib.parse
+from PIL import Image
 
 
 import aiohttp
+from chat_exporter.ext.aiohttp_factory import ClientSessionFactory
 from chat_exporter.ext.discord_import import discord
 
 
@@ -24,11 +26,12 @@ class AttachmentHandler:
 class AttachmentToLocalFileHostHandler(AttachmentHandler):
 	"""Save the assets to a local file host and embed the assets in the transcript from there."""
 
-	def __init__(self, base_path: Union[str, pathlib.Path], url_base: str):
+	def __init__(self, base_path: Union[str, pathlib.Path], url_base: str, compress_amount: Optional[int] = None):
 		if isinstance(base_path, str):
 			base_path = pathlib.Path(base_path)
 		self.base_path = base_path
 		self.url_base = url_base
+		self.compress_amount = compress_amount
 
 	async def process_asset(self, attachment: discord.Attachment) -> discord.Attachment:
 		"""Implement this to process the asset and return a url to the stored attachment.
@@ -36,8 +39,27 @@ class AttachmentToLocalFileHostHandler(AttachmentHandler):
 		:return: str
 		"""
 		file_name = urllib.parse.quote_plus(f"{datetime.datetime.utcnow().timestamp()}_{attachment.filename}")
-		asset_path = self.base_path / file_name
-		await attachment.save(asset_path)
+		valid_image_exts = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"] # animated gifs will be converted to a single frame jpeg if even supported??
+		is_valid = any(attachment.filename.lower().endswith(ext) for ext in valid_image_exts)
+		if self.compress_amount is not None and is_valid:
+			try:
+				session = await ClientSessionFactory.create_or_get_session()
+				async with session.get(attachment.url) as res:
+					if res.status != 200:
+						res.raise_for_status()
+					data = io.BytesIO(await res.read())
+					data.seek(0)
+					image = Image.open(data)
+					rgb_image = image.convert('RGB')
+					compressed_path = self.base_path / file_name
+					rgb_image.save(compressed_path, format='JPEG', quality=self.compress_amount)  # compress it down using jpeg compressor, works even with .png
+			except Exception as e:
+				# fall back to not compressing..
+				pass
+		else:
+			asset_path = self.base_path / file_name
+			await attachment.save(asset_path)
+			
 		file_url = f"{self.url_base}/{file_name}"
 		attachment.url = file_url
 		attachment.proxy_url = file_url
