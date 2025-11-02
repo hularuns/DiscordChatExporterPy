@@ -39,7 +39,7 @@ class AttachmentToLocalFileHostHandler(AttachmentHandler):
 		:return: str
 		"""
 		file_name = urllib.parse.quote_plus(f"{datetime.datetime.utcnow().timestamp()}_{attachment.filename}")
-		valid_image_exts = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"]
+		valid_image_exts = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"] # animated gifs will be converted to a single frame jpeg if even supported??
 		is_valid = any(attachment.filename.lower().endswith(ext) for ext in valid_image_exts)
 		if self.compress_amount is not None and is_valid:
 			try:
