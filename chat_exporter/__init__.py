@@ -4,9 +4,10 @@ from chat_exporter.chat_exporter import (
     quick_export,
     AttachmentHandler,
     AttachmentToLocalFileHostHandler,
-    AttachmentToDiscordChannelHandler)
+    AttachmentToDiscordChannelHandler,
+    AttachmentToS3Handler)
 
-__version__ = "2.9.0"
+__version__ = "2.9.2"
 
 __all__ = (
     export,
@@ -15,4 +16,5 @@ __all__ = (
     AttachmentHandler,
     AttachmentToLocalFileHostHandler,
     AttachmentToDiscordChannelHandler,
+    AttachmentToS3Handler,
 )
