@@ -8,7 +8,7 @@ import urllib.parse
 from PIL import Image
 
 from aiobotocore.session import get_session
-
+from dotenv import load_dotenv
 
 import aiohttp
 from chat_exporter.ext.aiohttp_factory import ClientSessionFactory
@@ -16,6 +16,7 @@ from chat_exporter.ext.discord_import import discord
 
 if TYPE_CHECKING:
     from types_aiobotocore_s3.client import S3Client
+
 
 
 
@@ -127,7 +128,7 @@ class AsyncS3ClientManager(AttachmentHandler):
     - AWS_ACCESS_KEY_ID
     - AWS_SECRET_ACCESS_KEY
     """
-
+	load_dotenv()
     endpoint_url = os.getenv("AWS_ENDPOINT_URL")
     r2_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
     r2_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
