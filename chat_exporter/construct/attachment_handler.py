@@ -308,6 +308,7 @@ class AttachmentToS3Handler(AttachmentHandler):
         file_url = f"/{self.key_prefix}/{file_name}"
         attachment.url = file_url
         attachment.proxy_url = file_url
+        return attachment
 
     def compress_image(self, data: io.BytesIO) -> io.BytesIO:
         image = Image.open(data)
