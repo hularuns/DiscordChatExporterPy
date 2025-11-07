@@ -128,7 +128,7 @@ class AsyncS3ClientManager(AttachmentHandler):
     - AWS_ACCESS_KEY_ID
     - AWS_SECRET_ACCESS_KEY
     """
-	load_dotenv()
+    load_dotenv()
     endpoint_url = os.getenv("AWS_ENDPOINT_URL")
     r2_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
     r2_secret_access_key = os.getenv("AWS_SECRET_ACCESS_KEY")
@@ -148,7 +148,7 @@ class AsyncS3ClientManager(AttachmentHandler):
             )
             cls._client = await cls._context.__aenter__()
         if not cls._client:
-			raise ConnectionError("Could not obtain S3 client - Check your environment variables.")
+            raise ConnectionError("Could not obtain S3 client - Check your environment variables.")
         return cls._client
 
     @classmethod
@@ -223,14 +223,14 @@ class AttachmentToS3Handler(AttachmentHandler):
     """
     Save to a S3 or R2 compatible bucket and embed the assets in the transcript from there.
     Pass aiobotocore s3 client to the constructor. If none is pass, it will use CloudflareFactory to obtain one and
-	Auto obtain the following from environment variables:
+    Auto obtain the following from environment variables:
  
-		- AWS_ENDPOINT_URL
-		- AWS_ACCESS_KEY_ID
-		- AWS_SECRET_ACCESS_KEY
+        - AWS_ENDPOINT_URL
+        - AWS_ACCESS_KEY_ID
+        - AWS_SECRET_ACCESS_KEY
     
     
-	## RAISES
+    ## RAISES
  
         FileExistsError # if overwrite is False and file exists.
         ValueError # if file size exceeds 25MB.
@@ -295,16 +295,16 @@ class AttachmentToS3Handler(AttachmentHandler):
             except Exception as e:
                 # fall back to not compressing..
                 pass
-		
-		# upload to s3 / r2 bucket
-		if data_to_upload is not None:
-			key = f"{self.key_prefix}/{file_name}" if self.key_prefix else file_name
-			s3_manager = S3Manager(self.s3_client, self.bucket_name)
-			await s3_manager.upload_file_data(data=data_to_upload, key_name=key, overwrite=True)
-		else:
-			raise ValueError("Could not obtain data to upload to S3/R2 bucket.")
+        
+        # upload to s3 / r2 bucket
+        if data_to_upload is not None:
+            key = f"{self.key_prefix}/{file_name}" if self.key_prefix else file_name
+            s3_manager = S3Manager(self.s3_client, self.bucket_name)
+            await s3_manager.upload_file_data(data=data_to_upload, key_name=key, overwrite=True)
+        else:
+            raise ValueError("Could not obtain data to upload to S3/R2 bucket.")
 
-	
+    
         file_url = f"/{self.key_prefix}/{file_name}"
         attachment.url = file_url
         attachment.proxy_url = file_url
