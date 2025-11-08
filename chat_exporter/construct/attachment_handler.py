@@ -18,8 +18,6 @@ if TYPE_CHECKING:
     from types_aiobotocore_s3.client import S3Client
 
 
-
-
 class AttachmentHandler:
     """Handle the saving of attachments (images, videos, audio, etc.)
 
@@ -128,6 +126,7 @@ class AsyncS3ClientManager(AttachmentHandler):
     - AWS_ACCESS_KEY_ID
     - AWS_SECRET_ACCESS_KEY
     """
+
     load_dotenv()
     endpoint_url = os.getenv("AWS_ENDPOINT_URL")
     r2_access_key_id = os.getenv("AWS_ACCESS_KEY_ID")
@@ -148,7 +147,9 @@ class AsyncS3ClientManager(AttachmentHandler):
             )
             cls._client = await cls._context.__aenter__()
         if not cls._client:
-            raise ConnectionError("Could not obtain S3 client - Check your environment variables.")
+            raise ConnectionError(
+                "Could not obtain S3 client - Check your environment variables."
+            )
         return cls._client
 
     @classmethod
@@ -161,13 +162,18 @@ class AsyncS3ClientManager(AttachmentHandler):
 
 
 class S3Manager:
-    def __init__(self, aiobotocore_s3_client: Optional["S3Client"],  bucket: str = "bald-server"):
+    def __init__(
+        self, aiobotocore_s3_client: Optional["S3Client"], bucket: str = "bald-server"
+    ):
         self.bucket = bucket
+        self.client = aiobotocore_s3_client
         self.s3 = None
 
     async def get_all_keys(self) -> List[str]:
-        client = await AsyncS3ClientManager.get_client()
-        response = await client.list_objects_v2(Bucket=self.bucket)
+        if self.client is None:
+            self.client = await AsyncS3ClientManager.get_client()
+
+        response = await self.client.list_objects_v2(Bucket=self.bucket)
         objects = []
         if "Contents" in response:
             for obj in response["Contents"]:
@@ -176,7 +182,12 @@ class S3Manager:
         return objects
 
     async def upload_file_data(
-        self, data: Union[bytes, io.BytesIO], key_name: str, overwrite: bool = False
+        self,
+        data: Union[bytes, io.BytesIO],
+        key_name: str,
+        overwrite: bool = False,
+        content_type: Optional[str] = None,
+        skip_files_which_are_too_large: bool = False,
     ) -> None:
         """Upload a file-like object or bytes to Cloudflare R2/ s3 with ability to overwrite or not.
 
@@ -192,13 +203,15 @@ class S3Manager:
         if isinstance(data, io.BytesIO):
             data.seek(0)
         if data.getbuffer().nbytes > 25_000_000:
-            raise ValueError("File size exceeds 25MB limit. Cannot upload to R2")
+            if not skip_files_which_are_too_large:
+                raise ValueError("File size exceeds 25MB limit. Cannot upload to R2")
+            return  # silently skip uploading
 
-        client = await AsyncS3ClientManager.get_client()
-
+        if self.client is None:
+            self.client = await AsyncS3ClientManager.get_client()
         try:
             if not overwrite:
-                obj = await client.get_object(Bucket=self.bucket, Key=key_name)
+                obj = await self.client.get_object(Bucket=self.bucket, Key=key_name)
                 if obj is not None:
                     try:
                         status = obj["ResponseMetadata"]["HTTPStatusCode"]
@@ -213,10 +226,43 @@ class S3Manager:
                             f"Object with key {key_name} already exists in bucket {self.bucket}."
                         )  # raise bespoke error?
 
-        except client.exceptions.NoSuchKey:
+        except self.client.exceptions.NoSuchKey:
             pass  # we can proceed to upload as the object does not exist
 
-        await client.put_object(Body=data, Bucket=self.bucket, Key=key_name)
+        await self.client.put_object(
+            Body=data, Bucket=self.bucket, Key=key_name, ContentType=content_type
+        )
+
+    async def delete_files_in_list(self, files_to_delete: List[str]) -> None:
+        """Delete all files from Cloudflare R2/s3 that start with the given prefix.
+
+        Can Raise AssertionError if deletion fails."""
+        if self.client is None:
+            self.client = await AsyncS3ClientManager.get_client()
+
+        logger.info(f"Deleting files with from bucket {self.bucket}")
+        keys_to_delete = []
+
+        for file_key in files_to_delete:
+            if len(keys_to_delete) >= 1000:
+                break  # will loop again to delete more
+            try:
+                obj = await self.client.get_object(Bucket=self.bucket, Key=file_key)
+            except self.client.exceptions.NoSuchKey:
+                continue  # file does not exist, skip
+            if obj is not None:
+                keys_to_delete.append({"Key": file_key})
+
+        if keys_to_delete:
+            deleted_response = await self.client.delete_objects(
+                Bucket=self.bucket,
+                Delete={"Objects": [{"Key": obj["Key"]} for obj in keys_to_delete]},
+            )
+            logger.debug(f"Deleted objects response: {deleted_response}")
+            if len(keys_to_delete) > 1000:
+                # Cloudflare R2/s3 delete_objects can only delete up to 1000 objects at a time so recursively call.
+                logger.debug(f"Recursively deleting more than 1000 objects")
+                await self.delete_files_in_list(keys_to_delete)
 
 
 class AttachmentToS3Handler(AttachmentHandler):
@@ -224,19 +270,22 @@ class AttachmentToS3Handler(AttachmentHandler):
     Save to a S3 or R2 compatible bucket and embed the assets in the transcript from there.
     Pass aiobotocore s3 client to the constructor. If none is pass, it will use CloudflareFactory to obtain one and
     Auto obtain the following from environment variables:
- 
+
         - AWS_ENDPOINT_URL
         - AWS_ACCESS_KEY_ID
         - AWS_SECRET_ACCESS_KEY
-    
-    
+
+
     ## RAISES
- 
+
         FileExistsError # if overwrite is False and file exists.
+
         ValueError # if file size exceeds 25MB.
+
         KeyError # if unable to determine if object exists.
+
         TypeError # if data is not bytes or io.BytesIO.
-        
+
     """
 
     def __init__(
@@ -245,11 +294,15 @@ class AttachmentToS3Handler(AttachmentHandler):
         bucket_name: str = "",
         key_prefix: str = "",
         compress_amount: Optional[int] = None,
+        skip_files_which_are_too_large: bool = False,
     ):
         self.s3_client = aiobotocore_s3_client
         self.bucket_name = bucket_name
         self.key_prefix = key_prefix
         self.compress_amount = compress_amount
+        self.skip_files_which_are_too_large = skip_files_which_are_too_large
+
+        self.uploaded_keys: List[str] = []
 
     def _get_data_size(self, data: Union[io.BytesIO, bytes]) -> int:
         """Get the size of the data in bytes."""
@@ -282,29 +335,57 @@ class AttachmentToS3Handler(AttachmentHandler):
         )
         data_to_upload = None
         #
-        
-        if is_valid:
-            try:
-                session = await ClientSessionFactory.create_or_get_session()
-                async with session.get(attachment.url) as res:
-                    if res.status != 200:
-                        res.raise_for_status()
-                    data = io.BytesIO(await res.read())
-                    data.seek(0)
+
+        try:
+            session = await ClientSessionFactory.create_or_get_session()
+            async with session.get(attachment.url) as res:
+                if res.status != 200:
+                    res.raise_for_status()
+                data = io.BytesIO(await res.read())
+                data.seek(0)
+                if is_valid:
                     data_to_upload = self.compress_image(data)
-            except Exception as e:
-                # fall back to not compressing..
-                pass
-        
+                else:
+                    data_to_upload = data
+        except Exception as e:
+            # fall back to not compressing..
+            pass
+
         # upload to s3 / r2 bucket
         if data_to_upload is not None:
             key = f"{self.key_prefix}/{file_name}" if self.key_prefix else file_name
-            s3_manager = S3Manager(self.s3_client, self.bucket_name)
-            await s3_manager.upload_file_data(data=data_to_upload, key_name=key, overwrite=True)
+            try:
+                s3_manager = S3Manager(self.s3_client, self.bucket_name)
+                for ext in valid_image_exts:
+                    if attachment.filename.lower().endswith(ext):
+                        content_type = f"image/{ext.lstrip('.')}"
+                        break
+                if file_name.lower().endswith(".mp4"):
+                    content_type = "video/mp4"
+                elif file_name.lower().endswith(".mp3"):
+                    content_type = "audio/mpeg"
+                elif file_name.lower().endswith(".wav"):
+                    content_type = "audio/wav"
+                elif file_name.lower().endswith(".ogg"):
+                    content_type = "audio/ogg"
+                else:
+                    content_type = "html/text"
+                await s3_manager.upload_file_data(
+                    data=data_to_upload,
+                    key_name=key,
+                    overwrite=True,
+                    content_type=content_type,
+                    skip_files_which_are_too_large=self.skip_files_which_are_too_large,
+                )
+            except Exception as e:
+                logger.error(
+                    f"Error uploading to S3/R2: {e} - deleting the uploaded files from cloudflare R2/S3 bucket - Try again? "
+                )
+                await s3_manager.delete_files_in_list(self.uploaded_keys)
+                raise e
         else:
             raise ValueError("Could not obtain data to upload to S3/R2 bucket.")
 
-    
         file_url = f"/{self.key_prefix}/{file_name}"
         attachment.url = file_url
         attachment.proxy_url = file_url
@@ -314,11 +395,7 @@ class AttachmentToS3Handler(AttachmentHandler):
         image = Image.open(data)
         rgb_image = image.convert("RGB")
         compressed_data = io.BytesIO()
-        rgb_image.save(
-                        compressed_data, format="JPEG", quality=self.compress_amount
-                    ) 
+        rgb_image.save(compressed_data, format="JPEG", quality=self.compress_amount)
         compressed_data.seek(0)
         data_to_upload = compressed_data
         return data_to_upload
-        
-        #
