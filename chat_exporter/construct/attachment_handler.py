@@ -186,8 +186,7 @@ class S3Manager:
         data: Union[bytes, io.BytesIO],
         key_name: str,
         overwrite: bool = False,
-        content_type: Optional[str] = None,
-        skip_files_which_are_too_large: bool = False,
+        content_type: str = "",
     ) -> None:
         """Upload a file-like object or bytes to Cloudflare R2/ s3 with ability to overwrite or not.
 
@@ -202,11 +201,9 @@ class S3Manager:
             raise TypeError("Data must be bytes or io.BytesIO")
         if isinstance(data, io.BytesIO):
             data.seek(0)
-        if data.getbuffer().nbytes > 25_000_000:
-            if not skip_files_which_are_too_large:
-                raise ValueError("File size exceeds 25MB limit. Cannot upload to R2")
-            return  # silently skip uploading
-
+        if _get_data_size(self, data) > 25 * 1024 * 1024:
+            raise ValueError("File size exceeds 25MB limit.")
+        
         if self.client is None:
             self.client = await AsyncS3ClientManager.get_client()
         try:
@@ -221,7 +218,6 @@ class S3Manager:
                         )
                         return
                     if status == 200:
-                        # Object exists, skip upload and raise error ?
                         raise FileExistsError(
                             f"Object with key {key_name} already exists in bucket {self.bucket}."
                         )  # raise bespoke error?
@@ -302,16 +298,18 @@ class AttachmentToS3Handler(AttachmentHandler):
         self.compress_amount = compress_amount
         self.skip_files_which_are_too_large = skip_files_which_are_too_large
 
+        self.valid_image_exts = [
+            ".png",
+            ".jpg",
+            ".jpeg",
+            ".webp",
+            ".bmp",
+            ".tiff",
+            ".gif",  # remove gif and add own compression handling...
+        ]  # animated gifs will be converted to a single frame jpeg if even supported??
         self.uploaded_keys: List[str] = []
 
-    def _get_data_size(self, data: Union[io.BytesIO, bytes]) -> int:
-        """Get the size of the data in bytes."""
-        if isinstance(data, io.BytesIO):
-            return data.getbuffer().nbytes
-        elif isinstance(data, bytes):
-            return len(data)
-        else:
-            raise TypeError(f"Unsupported data type: {type(data)}")
+
 
     async def process_asset(self, attachment: discord.Attachment) -> discord.Attachment:
         """Implement this to process the asset and return a url to the stored attachment.
@@ -321,17 +319,9 @@ class AttachmentToS3Handler(AttachmentHandler):
         file_name = urllib.parse.quote_plus(
             f"{datetime.datetime.utcnow().timestamp()}_{attachment.filename}"
         )
-        valid_image_exts = [
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".webp",
-            ".bmp",
-            ".tiff",
-            ".gif",
-        ]  # animated gifs will be converted to a single frame jpeg if even supported??
+
         is_valid = any(
-            attachment.filename.lower().endswith(ext) for ext in valid_image_exts
+            attachment.filename.lower().endswith(ext) for ext in self.valid_image_exts
         )
         data_to_upload = None
         #
@@ -356,20 +346,7 @@ class AttachmentToS3Handler(AttachmentHandler):
             key = f"{self.key_prefix}/{file_name}" if self.key_prefix else file_name
             try:
                 s3_manager = S3Manager(self.s3_client, self.bucket_name)
-                for ext in valid_image_exts:
-                    if attachment.filename.lower().endswith(ext):
-                        content_type = f"image/{ext.lstrip('.')}"
-                        break
-                if file_name.lower().endswith(".mp4"):
-                    content_type = "video/mp4"
-                elif file_name.lower().endswith(".mp3"):
-                    content_type = "audio/mpeg"
-                elif file_name.lower().endswith(".wav"):
-                    content_type = "audio/wav"
-                elif file_name.lower().endswith(".ogg"):
-                    content_type = "audio/ogg"
-                else:
-                    content_type = "html/text"
+                content_type = self._get_content_type(attachment, file_name)
                 await s3_manager.upload_file_data(
                     data=data_to_upload,
                     key_name=key,
@@ -391,6 +368,24 @@ class AttachmentToS3Handler(AttachmentHandler):
         attachment.proxy_url = file_url
         return attachment
 
+    def _get_content_type(self, attachment: discord.Attachment, file_name: str):
+
+        for ext in self.valid_image_exts:
+            if attachment.filename.lower().endswith(ext):
+                content_type = f"image/{ext.lstrip('.')}"
+                break
+        if file_name.lower().endswith(".mp4"):
+            content_type = "video/mp4"
+        elif file_name.lower().endswith(".mp3"):
+            content_type = "audio/mpeg"
+        elif file_name.lower().endswith(".wav"):
+            content_type = "audio/wav"
+        elif file_name.lower().endswith(".ogg"):
+            content_type = "audio/ogg"
+        else:
+            content_type = "html/text"
+        return content_type
+
     def compress_image(self, data: io.BytesIO) -> io.BytesIO:
         image = Image.open(data)
         rgb_image = image.convert("RGB")
@@ -399,3 +394,13 @@ class AttachmentToS3Handler(AttachmentHandler):
         compressed_data.seek(0)
         data_to_upload = compressed_data
         return data_to_upload
+
+
+def _get_data_size(data: Union[io.BytesIO, bytes]) -> int:
+    """Get the size of the data in bytes."""
+    if isinstance(data, io.BytesIO):
+        return data.getbuffer().nbytes
+    elif isinstance(data, bytes):
+        return len(data)
+    else:
+        raise TypeError(f"Unsupported data type: {type(data)}")
