@@ -187,6 +187,7 @@ class S3Manager:
         key_name: str,
         overwrite: bool = False,
         content_type: str = "",
+        skip_files_which_are_too_large: bool = False,
     ) -> None:
         """Upload a file-like object or bytes to Cloudflare R2/ s3 with ability to overwrite or not.
 
@@ -198,10 +199,15 @@ class S3Manager:
         """
 
         if not isinstance(data, (bytes, io.BytesIO)):
-            raise TypeError("Data must be bytes or io.BytesIO")
+            raise TypeError("Warning: Attachment data must be bytes or io.BytesIO")
         if isinstance(data, io.BytesIO):
             data.seek(0)
-        if _get_data_size(self, data) > 25 * 1024 * 1024:
+        if _get_data_size(data) > 25 * 1024 * 1024:
+            if skip_files_which_are_too_large:
+                logger.warning(
+                    f"File {key_name} exceeds 25MB limit, skipping upload."
+                )
+                return
             raise ValueError("File size exceeds 25MB limit.")
         
         if self.client is None:
