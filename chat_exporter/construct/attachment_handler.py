@@ -204,12 +204,10 @@ class S3Manager:
             data.seek(0)
         if _get_data_size(data) > 25 * 1024 * 1024:
             if skip_files_which_are_too_large:
-                logger.warning(
-                    f"File {key_name} exceeds 25MB limit, skipping upload."
-                )
+                logger.warning(f"File {key_name} exceeds 25MB limit, skipping upload.")
                 return
             raise ValueError("File size exceeds 25MB limit.")
-        
+
         if self.client is None:
             self.client = await AsyncS3ClientManager.get_client()
         try:
@@ -315,8 +313,6 @@ class AttachmentToS3Handler(AttachmentHandler):
         ]  # animated gifs will be converted to a single frame jpeg if even supported??
         self.uploaded_keys: List[str] = []
 
-
-
     async def process_asset(self, attachment: discord.Attachment) -> discord.Attachment:
         """Implement this to process the asset and return a url to the stored attachment.
         :param attachment: discord.Attachment
@@ -349,11 +345,13 @@ class AttachmentToS3Handler(AttachmentHandler):
 
         # upload to s3 / r2 bucket
         if data_to_upload is not None:
-            self.key_prefix = self.key_prefix.removesuffix("/")  # ensure no trailing slash for combining.
+            self.key_prefix = self.key_prefix.removesuffix(
+                "/"
+            )  # ensure no trailing slash for combining.
             key = f"{self.key_prefix}/{file_name}" if self.key_prefix else file_name
             try:
                 s3_manager = S3Manager(self.s3_client, self.bucket_name)
-                content_type = self._get_content_type(attachment, file_name)
+                content_type = self._get_content_type(file_name)
                 await s3_manager.upload_file_data(
                     data=data_to_upload,
                     key_name=key,
@@ -375,10 +373,10 @@ class AttachmentToS3Handler(AttachmentHandler):
         attachment.proxy_url = file_url
         return attachment
 
-    def _get_content_type(self, attachment: discord.Attachment, file_name: str):
+    def _get_content_type(self, file_name: str) -> str:
 
         for ext in self.valid_image_exts:
-            if attachment.filename.lower().endswith(ext):
+            if file_name.lower().endswith(ext):
                 content_type = f"image/{ext.lstrip('.')}"
                 break
         if file_name.lower().endswith(".mp4"):
