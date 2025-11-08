@@ -349,6 +349,7 @@ class AttachmentToS3Handler(AttachmentHandler):
 
         # upload to s3 / r2 bucket
         if data_to_upload is not None:
+            self.key_prefix = self.key_prefix.removesuffix("/")  # ensure no trailing slash for combining.
             key = f"{self.key_prefix}/{file_name}" if self.key_prefix else file_name
             try:
                 s3_manager = S3Manager(self.s3_client, self.bucket_name)
