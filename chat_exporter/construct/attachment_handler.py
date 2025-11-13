@@ -271,6 +271,8 @@ class AttachmentToS3Handler(AttachmentHandler):
     """
     Save to a S3 or R2 compatible bucket and embed the assets in the transcript from there.
     Pass aiobotocore s3 client to the constructor. If none is pass, it will use CloudflareFactory to obtain one and
+    
+    If an error occurs during upload, and raise_exceptions is False, the original attachment is returned.
 
     Auto obtain the following from environment variables:
 
@@ -281,13 +283,13 @@ class AttachmentToS3Handler(AttachmentHandler):
 
     ## RAISES
 
-        FileExistsError # if overwrite is False and file exists.
+        >>> FileExistsError # if overwrite is False and file exists.
 
-        ValueError # if file size exceeds 25MB.
+        >>> ValueError # if file size exceeds 25MB.
 
-        KeyError # if unable to determine if object exists.
+        >>> KeyError # if unable to determine if object exists.
 
-        TypeError # if data is not bytes or io.BytesIO.
+        >>> TypeError # if data is not bytes or io.BytesIO.
 
     """
 
@@ -297,16 +299,21 @@ class AttachmentToS3Handler(AttachmentHandler):
         bucket_name: str = "",
         key_prefix: str = "",
         skip_files_which_are_too_large: bool = False,
+        raise_exceptions: bool = False,
     ):
         self.s3_client = aiobotocore_s3_client
         self.bucket_name = bucket_name
         self.key_prefix = key_prefix
         self.skip_files_which_are_too_large = skip_files_which_are_too_large
+        self.raise_exceptions = raise_exceptions
 
         self.uploaded_keys: List[str] = []
 
     async def process_asset(self, attachment: discord.Attachment) -> discord.Attachment:
         """Implement this to process the asset and return a url to the stored attachment.
+        
+        If an error occurs during upload, and raise_exceptions is False, the original attachment is returned.
+        
         :param attachment: discord.Attachment
         :return: str
         """
@@ -325,8 +332,13 @@ class AttachmentToS3Handler(AttachmentHandler):
                 data = io.BytesIO(await res.read())
                 data.seek(0)
         except Exception as e:
-            # fall back to not compressing..
-            pass
+            if self.raise_exceptions:
+                raise e
+            else:
+                logger.error(
+                    f"[raise_exception] is False and an {e} exception was hit getting and converting data to io.BytesIO. Continuing..."
+                )
+                return attachment
 
         # upload to s3 / r2 bucket
         if data is not None:
@@ -346,10 +358,25 @@ class AttachmentToS3Handler(AttachmentHandler):
                 logger.error(
                     f"Error uploading to S3/R2: {e} - deleting the uploaded files from cloudflare R2/S3 bucket - Try again? "
                 )
-                await s3_manager.delete_files_in_list(self.uploaded_keys)
-                raise e
+                if self.raise_exceptions:
+                    await s3_manager.delete_files_in_list(self.uploaded_keys)
+                    raise e
+                else:
+                    logger.error(
+                        f"[raise_exception] is False and an {e} exception was hit uploading the data to the Object Storage. Continuing..."
+                    )
+                    return attachment
         else:
-            raise ValueError("Could not obtain data to upload to S3/R2 bucket.")
+            if self.raise_exceptions:
+                raise ValueError(
+                    "Could not obtain data to upload to S3/R2 bucket - This shouldn't have even been hit.."
+                )
+
+            else:
+                logger.error(
+                    f"[raise_exception] is False and an ValueError exception was hit as data was None, this shouldn't even be hit. Continuing..."
+                )
+                return attachment
 
         file_url = f"/{self.key_prefix}/{file_name}"
         attachment.url = file_url
