@@ -34,17 +34,11 @@ class AttachmentHandler:
 class AttachmentToLocalFileHostHandler(AttachmentHandler):
     """Save the assets to a local file host and embed the assets in the transcript from there."""
 
-    def __init__(
-        self,
-        base_path: Union[str, pathlib.Path],
-        url_base: str,
-        compress_amount: Optional[int] = None,
-    ):
+    def __init__(self, base_path: Union[str, pathlib.Path], url_base: str):
         if isinstance(base_path, str):
             base_path = pathlib.Path(base_path)
         self.base_path = base_path
         self.url_base = url_base
-        self.compress_amount = compress_amount
 
     async def process_asset(self, attachment: discord.Attachment) -> discord.Attachment:
         """Implement this to process the asset and return a url to the stored attachment.
@@ -54,38 +48,19 @@ class AttachmentToLocalFileHostHandler(AttachmentHandler):
         file_name = urllib.parse.quote_plus(
             f"{datetime.datetime.utcnow().timestamp()}_{attachment.filename}"
         )
-        valid_image_exts = [
-            ".png",
-            ".jpg",
-            ".jpeg",
-            ".webp",
-            ".bmp",
-            ".tiff",
-            ".gif",
-        ]  # animated gifs will be converted to a single frame jpeg if even supported??
-        is_valid = any(
-            attachment.filename.lower().endswith(ext) for ext in valid_image_exts
-        )
-        if self.compress_amount is not None and is_valid:
-            try:
-                session = await ClientSessionFactory.create_or_get_session()
-                async with session.get(attachment.url) as res:
-                    if res.status != 200:
-                        res.raise_for_status()
-                    data = io.BytesIO(await res.read())
-                    data.seek(0)
-                    image = Image.open(data)
-                    rgb_image = image.convert("RGB")
-                    compressed_path = self.base_path / file_name
-                    rgb_image.save(
-                        compressed_path, format="JPEG", quality=self.compress_amount
-                    )  # compress it down using jpeg compressor, works even with .png
-            except Exception as e:
-                # fall back to not compressing..
-                pass
-        else:
+
+        try:
+            session = await ClientSessionFactory.create_or_get_session()
+            async with session.get(attachment.url) as res:
+                if res.status != 200:
+                    res.raise_for_status()
+                data = io.BytesIO(await res.read())
+                data.seek(0)
+
             asset_path = self.base_path / file_name
             await attachment.save(asset_path)
+        except Exception as e:
+            pass  # silently fail...
 
         file_url = f"{self.url_base}/{file_name}"
         attachment.url = file_url
@@ -269,6 +244,7 @@ class AttachmentToS3Handler(AttachmentHandler):
     """
     Save to a S3 or R2 compatible bucket and embed the assets in the transcript from there.
     Pass aiobotocore s3 client to the constructor. If none is pass, it will use CloudflareFactory to obtain one and
+
     Auto obtain the following from environment variables:
 
         - AWS_ENDPOINT_URL
@@ -293,24 +269,22 @@ class AttachmentToS3Handler(AttachmentHandler):
         aiobotocore_s3_client: Optional["S3Client"],
         bucket_name: str = "",
         key_prefix: str = "",
-        compress_amount: Optional[int] = None,
         skip_files_which_are_too_large: bool = False,
     ):
         self.s3_client = aiobotocore_s3_client
         self.bucket_name = bucket_name
         self.key_prefix = key_prefix
-        self.compress_amount = compress_amount
         self.skip_files_which_are_too_large = skip_files_which_are_too_large
 
-        self.valid_image_exts = [
+        self._image_exts = [
             ".png",
             ".jpg",
             ".jpeg",
             ".webp",
             ".bmp",
             ".tiff",
-            ".gif",  # remove gif and add own compression handling...
-        ]  # animated gifs will be converted to a single frame jpeg if even supported??
+            ".gif",
+        ]
         self.uploaded_keys: List[str] = []
 
     async def process_asset(self, attachment: discord.Attachment) -> discord.Attachment:
@@ -322,10 +296,7 @@ class AttachmentToS3Handler(AttachmentHandler):
             f"{datetime.datetime.utcnow().timestamp()}_{attachment.filename}"
         )
 
-        is_valid = any(
-            attachment.filename.lower().endswith(ext) for ext in self.valid_image_exts
-        )
-        data_to_upload = None
+        data: Optional[io.BytesIO] = None
         #
 
         try:
@@ -335,16 +306,12 @@ class AttachmentToS3Handler(AttachmentHandler):
                     res.raise_for_status()
                 data = io.BytesIO(await res.read())
                 data.seek(0)
-                if is_valid:
-                    data_to_upload = self.compress_image(data)
-                else:
-                    data_to_upload = data
         except Exception as e:
             # fall back to not compressing..
             pass
 
         # upload to s3 / r2 bucket
-        if data_to_upload is not None:
+        if data is not None:
             self.key_prefix = self.key_prefix.removesuffix(
                 "/"
             )  # ensure no trailing slash for combining.
@@ -353,7 +320,7 @@ class AttachmentToS3Handler(AttachmentHandler):
                 s3_manager = S3Manager(self.s3_client, self.bucket_name)
                 content_type = self._get_content_type(file_name)
                 await s3_manager.upload_file_data(
-                    data=data_to_upload,
+                    data=data,
                     key_name=key,
                     overwrite=True,
                     content_type=content_type,
@@ -375,11 +342,11 @@ class AttachmentToS3Handler(AttachmentHandler):
 
     def _get_content_type(self, file_name: str) -> str:
 
-        for ext in self.valid_image_exts:
-            if file_name.lower().endswith(ext):
+        if any(file_name.lower().endswith(ext) for ext in self._image_exts):
+            for ext in self._image_exts:
                 content_type = f"image/{ext.lstrip('.')}"
                 break
-        if file_name.lower().endswith(".mp4"):
+        elif file_name.lower().endswith(".mp4"):
             content_type = "video/mp4"
         elif file_name.lower().endswith(".mp3"):
             content_type = "audio/mpeg"
@@ -390,15 +357,6 @@ class AttachmentToS3Handler(AttachmentHandler):
         else:
             content_type = "html/text"
         return content_type
-
-    def compress_image(self, data: io.BytesIO) -> io.BytesIO:
-        image = Image.open(data)
-        rgb_image = image.convert("RGB")
-        compressed_data = io.BytesIO()
-        rgb_image.save(compressed_data, format="JPEG", quality=self.compress_amount)
-        compressed_data.seek(0)
-        data_to_upload = compressed_data
-        return data_to_upload
 
 
 def _get_data_size(data: Union[io.BytesIO, bytes]) -> int:
